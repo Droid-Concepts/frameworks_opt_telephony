@@ -1148,6 +1148,11 @@ public final class DcTracker extends DcTrackerBase {
      * Handles changes to the APN database.
      */
     private void onApnChanged() {
+        if (DBG) log("onApnChanged: tryRestartDataConnections");
+        tryRestartDataConnections(Phone.REASON_APN_CHANGED);
+    }
+
+    private void tryRestartDataConnections(String reason) {
         DctConstants.State overallState = getOverallState();
         boolean isDisconnected = (overallState == DctConstants.State.IDLE ||
                 overallState == DctConstants.State.FAILED);
@@ -1159,11 +1164,11 @@ public final class DcTracker extends DcTrackerBase {
 
         // TODO: It'd be nice to only do this if the changed entrie(s)
         // match the current operator.
-        if (DBG) log("onApnChanged: createAllApnList and cleanUpAllConnections");
+        if (DBG) log("tryRestartDataConnections: createAllApnList and cleanUpAllConnections");
         createAllApnList();
-        cleanUpAllConnections(!isDisconnected, Phone.REASON_APN_CHANGED);
+        cleanUpAllConnections(!isDisconnected, reason);
         if (isDisconnected) {
-            setupDataOnConnectableApns(Phone.REASON_APN_CHANGED);
+            setupDataOnConnectableApns(reason);
         }
     }
 
@@ -1843,7 +1848,10 @@ public final class DcTracker extends DcTrackerBase {
         }
 
         // If APN is still enabled, try to bring it back up automatically
-        if (apnContext.isReady() && retryAfterDisconnected(apnContext.getReason())) {
+        if (apnContext.isReady() && apnContext.getReason().equals(Phone.REASON_NW_TYPE_CHANGED)) {
+            // Retry immediately if reason is nw_type_changed (like rat switch, for instance)
+            setupDataOnConnectableApns(Phone.REASON_NW_TYPE_CHANGED);
+        } else if (apnContext.isReady() && retryAfterDisconnected(apnContext.getReason())) {
             SystemProperties.set(PUPPET_MASTER_RADIO_STRESS_TEST, "false");
             // Wait a bit before trying the next APN, so that
             // we're not tying up the RIL command channel.
@@ -2350,6 +2358,8 @@ public final class DcTracker extends DcTrackerBase {
                 newIccRecords.registerForRecordsLoaded(
                         this, DctConstants.EVENT_RECORDS_LOADED, null);
             }
+            log("onUpdateIcc: tryRestartDataConnections " + Phone.REASON_NW_TYPE_CHANGED);
+            tryRestartDataConnections(Phone.REASON_NW_TYPE_CHANGED);
         }
     }
 
