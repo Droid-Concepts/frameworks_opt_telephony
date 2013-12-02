@@ -2392,6 +2392,7 @@ public final class Telephony {
          * Initial Preferred APN
          * true : initial preferred APN, false : not initial preferred APN.
          * Default is false.
+         * @hide
          */
         public static final String PREFERRED = "preferred";
     }
