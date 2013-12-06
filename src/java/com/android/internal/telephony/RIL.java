@@ -2578,7 +2578,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
         return rr;
     }
 
-    protected String
+    protected static String
     retToString(int req, Object ret) {
         if (ret == null) return "";
         switch (req) {
