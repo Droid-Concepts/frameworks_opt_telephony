@@ -20,12 +20,6 @@ import android.Manifest;
 import android.app.AppOpsManager;
 import android.app.PendingIntent;
 import android.content.Context;
-import android.os.RemoteException;
-import android.os.AsyncResult;
-import android.os.Binder;
-import android.os.Handler;
-import android.os.Message;
-import android.telephony.Rlog;
 import android.util.Log;
 
 import com.android.internal.telephony.uicc.IccConstants;
@@ -146,108 +140,6 @@ public abstract class IccSmsInterfaceManager extends ISms.Stub {
                 Manifest.permission.RECEIVE_SMS, message);
         mContext.enforceCallingPermission(
                 Manifest.permission.SEND_SMS, message);
-    }
-
-    /**
-     * Update the specified message on the Icc.
-     *
-     * @param index record index of message to update
-     * @param status new message status (STATUS_ON_ICC_READ,
-     *                  STATUS_ON_ICC_UNREAD, STATUS_ON_ICC_SENT,
-     *                  STATUS_ON_ICC_UNSENT, STATUS_ON_ICC_FREE)
-     * @param pdu the raw PDU to store
-     * @return success or not
-     *
-     */
-    @Override
-    public boolean
-    updateMessageOnIccEf(String callingPackage, int index, int status, byte[] pdu) {
-        if (DBG) log("updateMessageOnIccEf: index=" + index +
-                " status=" + status + " ==> " +
-                "("+ Arrays.toString(pdu) + ")");
-        enforceReceiveAndSend("Updating message on Icc");
-        if (mAppOps.noteOp(AppOpsManager.OP_WRITE_ICC_SMS, Binder.getCallingUid(),
-                callingPackage) != AppOpsManager.MODE_ALLOWED) {
-            return false;
-        }
-        synchronized(mLock) {
-            mSuccess = false;
-            Message response = mHandler.obtainMessage(EVENT_UPDATE_DONE);
-
-            if (status == STATUS_ON_ICC_FREE) {
-                // RIL_REQUEST_DELETE_SMS_ON_SIM vs RIL_REQUEST_CDMA_DELETE_SMS_ON_RUIM
-                // Special case FREE: call deleteSmsOnSim/Ruim instead of
-                // manipulating the record
-                // Will eventually fail if icc card is not present.
-                deleteSms(index, response);
-            } else {
-                //IccFilehandler can be null if ICC card is not present.
-                IccFileHandler fh = mPhone.getIccFileHandler();
-                if (fh == null) {
-                    response.recycle();
-                    return mSuccess; /* is false */
-                }
-                byte[] record = makeSmsRecordData(status, pdu);
-                fh.updateEFLinearFixed(
-                        IccConstants.EF_SMS,
-                        index, record, null, response);
-            }
-            try {
-                mLock.wait();
-            } catch (InterruptedException e) {
-                log("interrupted while trying to update by index");
-            }
-        }
-        return mSuccess;
-    }
-
-    /**
-     * Copy a raw SMS PDU to the Icc.
-     *
-     * @param pdu the raw PDU to store
-     * @param status message status (STATUS_ON_ICC_READ, STATUS_ON_ICC_UNREAD,
-     *               STATUS_ON_ICC_SENT, STATUS_ON_ICC_UNSENT)
-     * @return success or not
-     *
-     */
-    @Override
-    public boolean copyMessageToIccEf(String callingPackage, int status, byte[] pdu, byte[] smsc) {
-        //NOTE smsc not used in RUIM
-        if (DBG) log("copyMessageToIccEf: status=" + status + " ==> " +
-                "pdu=("+ Arrays.toString(pdu) +
-                "), smsc=(" + Arrays.toString(smsc) +")");
-        enforceReceiveAndSend("Copying message to Icc");
-        if (mAppOps.noteOp(AppOpsManager.OP_WRITE_ICC_SMS, Binder.getCallingUid(),
-                callingPackage) != AppOpsManager.MODE_ALLOWED) {
-            return false;
-        }
-        synchronized(mLock) {
-            mSuccess = false;
-            Message response = mHandler.obtainMessage(EVENT_UPDATE_DONE);
-
-            //RIL_REQUEST_WRITE_SMS_TO_SIM vs RIL_REQUEST_CDMA_WRITE_SMS_TO_RUIM
-            writeSms(status, smsc, pdu, response);
-
-            try {
-                mLock.wait();
-            } catch (InterruptedException e) {
-                log("interrupted while trying to update by index");
-            }
-        }
-        return mSuccess;
-    }
-
-    /**
-     * Retrieves all messages currently stored on Icc.
-     *
-     * @return list of SmsRawData of all sms on Icc
-     */
-    @Override
-    public void registerSmsMiddleware(String name, ISmsMiddleware middleware) throws android.os.RemoteException {
-    }
-
-    @Override
-    public void synthesizeMessages(String originatingAddress, String scAddress, List<String> messages, long timestampMillis) throws RemoteException {
     }
 
     /**

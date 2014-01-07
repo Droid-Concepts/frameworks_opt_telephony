@@ -16,86 +16,26 @@
 
 package com.android.internal.telephony;
 
-import java.util.Hashtable;
-import java.util.List;
-
-import android.app.Activity;
 import android.app.PendingIntent;
-import android.content.Context;
-import android.content.Intent;
-import android.os.PowerManager;
-import android.os.RemoteException;
 import android.os.ServiceManager;
-import android.os.SystemProperties;
-import android.provider.Telephony.Sms.Intents;
-import android.telephony.SmsMessage;
+
+import java.util.List;
 
 public class IccSmsInterfaceManagerProxy extends ISms.Stub {
     private IccSmsInterfaceManager mIccSmsInterfaceManager;
-    private Hashtable<String, ISmsMiddleware> mMiddleware = new Hashtable<String, ISmsMiddleware>();
 
-    public IccSmsInterfaceManagerProxy(Context context,
-            IccSmsInterfaceManager iccSmsInterfaceManager) {
-        this.mContext = context;
-        mIccSmsInterfaceManager = iccSmsInterfaceManager;
+    public IccSmsInterfaceManagerProxy(IccSmsInterfaceManager
+            iccSmsInterfaceManager) {
+        this.mIccSmsInterfaceManager = iccSmsInterfaceManager;
         if(ServiceManager.getService("isms") == null) {
             ServiceManager.addService("isms", this);
         }
-
-        createWakelock();
     }
 
     public void setmIccSmsInterfaceManager(IccSmsInterfaceManager iccSmsInterfaceManager) {
         mIccSmsInterfaceManager = iccSmsInterfaceManager;
     }
 
-    private void createWakelock() {
-        PowerManager pm = (PowerManager)mContext.getSystemService(Context.POWER_SERVICE);
-        mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SMSDispatcher");
-        mWakeLock.setReferenceCounted(true);
-    }
-
-    @Override
-    public void registerSmsMiddleware(String name, ISmsMiddleware middleware) throws android.os.RemoteException {
-        if (!"1".equals(SystemProperties.get("persist.sys.sms_debug", "0"))) {
-            mContext.enforceCallingPermission(
-                    "android.permission.INTERCEPT_SMS", "");
-        }
-        mMiddleware.put(name, middleware);
-    }
-
-    private Context mContext;
-    private PowerManager.WakeLock mWakeLock;
-    private static final int WAKE_LOCK_TIMEOUT = 5000;
-    private void dispatchPdus(byte[][] pdus) {
-        Intent intent = new Intent(Intents.SMS_RECEIVED_ACTION);
-        intent.putExtra("pdus", pdus);
-        intent.putExtra("format", SmsMessage.FORMAT_SYNTHETIC);
-        dispatch(intent, SMSDispatcher.RECEIVE_SMS_PERMISSION);
-    }
-
-    private void dispatch(Intent intent, String permission) {
-        // Hold a wake lock for WAKE_LOCK_TIMEOUT seconds, enough to give any
-        // receivers time to take their own wake locks.
-        mWakeLock.acquire(WAKE_LOCK_TIMEOUT);
-        mContext.sendOrderedBroadcast(intent, permission);
-    }
-
-    public void synthesizeMessages(String originatingAddress, String scAddress, List<String> messages, long timestampMillis) throws RemoteException {
-        // if not running in debug mode
-        if (!"1".equals(SystemProperties.get("persist.sys.sms_debug", "0"))) {
-            mContext.enforceCallingPermission(
-                    "android.permission.BROADCAST_SMS", "");
-        }
-        byte[][] pdus = new byte[messages.size()][];
-        for (int i = 0; i < messages.size(); i++) {
-            SyntheticSmsMessage message = new SyntheticSmsMessage(originatingAddress, scAddress, messages.get(i), timestampMillis);
-            pdus[i] = message.getPdu();
-        }
-        dispatchPdus(pdus);
-    }
-
-    @Override
     public boolean
     updateMessageOnIccEf(String callingPackage, int index, int status, byte[] pdu) {
          return mIccSmsInterfaceManager.updateMessageOnIccEf(callingPackage, index, status, pdu);
@@ -121,15 +61,6 @@ public class IccSmsInterfaceManagerProxy extends ISms.Stub {
 
     public void sendText(String destAddr, String scAddr,
             String text, PendingIntent sentIntent, PendingIntent deliveryIntent) {
-        for (ISmsMiddleware middleware: mMiddleware.values()) {
-            try {
-                if (middleware.onSendText(destAddr, scAddr, text, sentIntent, deliveryIntent))
-                    return;
-            }
-            catch (Exception e) {
-                // TOOD: remove the busted middleware?
-            }
-        }
         mIccSmsInterfaceManager.sendText(destAddr, scAddr, text, sentIntent, deliveryIntent);
     }
 
@@ -137,15 +68,6 @@ public class IccSmsInterfaceManagerProxy extends ISms.Stub {
     public void sendMultipartText(String callingPackage, String destAddr, String scAddr,
             List<String> parts, List<PendingIntent> sentIntents,
             List<PendingIntent> deliveryIntents) throws android.os.RemoteException {
-        for (ISmsMiddleware middleware: mMiddleware.values()) {
-            try {
-                if (middleware.onSendMultipartText(destAddr, scAddr, parts, sentIntents, deliveryIntents))
-                    return;
-            }
-            catch (Exception e) {
-                // TOOD: remove the busted middleware?
-            }
-        }
         mIccSmsInterfaceManager.sendMultipartText(destAddr, scAddr,
                 parts, sentIntents, deliveryIntents);
     }
