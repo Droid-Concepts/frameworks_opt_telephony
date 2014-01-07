@@ -16,63 +16,23 @@
 
 package com.android.internal.telephony;
 
-import java.util.ArrayList;
+import java.util.Hashtable;
 import java.util.List;
 
 import android.app.Activity;
 import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.ServiceManager;
-import android.os.UserHandle;
+import android.os.SystemProperties;
 import android.provider.Telephony.Sms.Intents;
 import android.telephony.SmsMessage;
 
 public class IccSmsInterfaceManagerProxy extends ISms.Stub {
     private IccSmsInterfaceManager mIccSmsInterfaceManager;
-
-    private BroadcastReceiver mReceiver = new BroadcastReceiver() {
-        public void onReceive(Context context, Intent intent) {
-            // check if the message was aborted
-            if (getResultCode() != Activity.RESULT_OK) {
-                return;
-            }
-            String destAddr = getResultData();
-            String scAddr = intent.getStringExtra("scAddr");
-            String callingPackage = intent.getStringExtra("callingPackage");
-            ArrayList<String> parts = intent.getStringArrayListExtra("parts");
-            ArrayList<PendingIntent> sentIntents = intent.getParcelableArrayListExtra("sentIntent");
-            ArrayList<PendingIntent> deliveryIntents = intent.getParcelableArrayListExtra("deliveryIntents");
-
-            if (intent.getIntExtra("callingUid", 0) != 0) {
-                callingPackage = callingPackage + "\\" + intent.getIntExtra("callingUid", 0);
-            }
-
-            if (intent.getBooleanExtra("multipart", false)) {
-                mIccSmsInterfaceManager.sendMultipartText(callingPackage, destAddr, scAddr,
-                        parts, sentIntents, deliveryIntents);
-                return;
-            }
-
-            PendingIntent sentIntent = null;
-            if (sentIntents != null && sentIntents.size() > 0) {
-                sentIntent = sentIntents.get(0);
-            }
-            PendingIntent deliveryIntent = null;
-            if (deliveryIntents != null && deliveryIntents.size() > 0) {
-                deliveryIntent = deliveryIntents.get(0);
-            }
-            String text = null;
-            if (parts != null && parts.size() > 0) {
-                text = parts.get(0);
-            }
-            mIccSmsInterfaceManager.sendText(callingPackage, destAddr, scAddr, text,
-                    sentIntent, deliveryIntent);
-        }
-    };
+    private Hashtable<String, ISmsMiddleware> mMiddleware = new Hashtable<String, ISmsMiddleware>();
 
     public IccSmsInterfaceManagerProxy(Context context,
             IccSmsInterfaceManager iccSmsInterfaceManager) {
@@ -91,8 +51,17 @@ public class IccSmsInterfaceManagerProxy extends ISms.Stub {
 
     private void createWakelock() {
         PowerManager pm = (PowerManager)mContext.getSystemService(Context.POWER_SERVICE);
-        mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "IccSmsInterfaceManager");
+        mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SMSDispatcher");
         mWakeLock.setReferenceCounted(true);
+    }
+
+    @Override
+    public void registerSmsMiddleware(String name, ISmsMiddleware middleware) throws android.os.RemoteException {
+        if (!"1".equals(SystemProperties.get("persist.sys.sms_debug", "0"))) {
+            mContext.enforceCallingPermission(
+                    "android.permission.INTERCEPT_SMS", "");
+        }
+        mMiddleware.put(name, middleware);
     }
 
     private Context mContext;
@@ -113,8 +82,11 @@ public class IccSmsInterfaceManagerProxy extends ISms.Stub {
     }
 
     public void synthesizeMessages(String originatingAddress, String scAddress, List<String> messages, long timestampMillis) throws RemoteException {
-        mContext.enforceCallingPermission(
-                android.Manifest.permission.BROADCAST_SMS, "");
+        // if not running in debug mode
+        if (!"1".equals(SystemProperties.get("persist.sys.sms_debug", "0"))) {
+            mContext.enforceCallingPermission(
+                    "android.permission.BROADCAST_SMS", "");
+        }
         byte[][] pdus = new byte[messages.size()][];
         for (int i = 0; i < messages.size(); i++) {
             SyntheticSmsMessage message = new SyntheticSmsMessage(originatingAddress, scAddress, messages.get(i), timestampMillis);
@@ -147,49 +119,35 @@ public class IccSmsInterfaceManagerProxy extends ISms.Stub {
                 sentIntent, deliveryIntent);
     }
 
-    private void broadcastOutgoingSms(String callingPackage, String destAddr, String scAddr,
-            boolean multipart, ArrayList<String> parts,
-            ArrayList<PendingIntent> sentIntents, ArrayList<PendingIntent> deliveryIntents) {
-        Intent broadcast = new Intent(Intent.ACTION_NEW_OUTGOING_SMS);
-        broadcast.putExtra("destAddr", destAddr);
-        broadcast.putExtra("scAddr", scAddr);
-        broadcast.putExtra("multipart", multipart);
-        broadcast.putExtra("callingPackage", callingPackage);
-        broadcast.putExtra("callingUid", android.os.Binder.getCallingUid());
-        broadcast.putStringArrayListExtra("parts", parts);
-        broadcast.putParcelableArrayListExtra("sentIntents", sentIntents);
-        broadcast.putParcelableArrayListExtra("deliveryIntents", deliveryIntents);
-        mContext.sendOrderedBroadcastAsUser(broadcast, UserHandle.OWNER,
-                android.Manifest.permission.INTERCEPT_SMS,
-                mReceiver, null, Activity.RESULT_OK, destAddr, null);
-    }
-
-    @Override
-    public void sendText(String callingPackage, String destAddr, String scAddr,
+    public void sendText(String destAddr, String scAddr,
             String text, PendingIntent sentIntent, PendingIntent deliveryIntent) {
-        mContext.enforceCallingPermission(
-                android.Manifest.permission.SEND_SMS,
-                "Sending SMS message");
-        ArrayList<String> parts = new ArrayList<String>();
-        parts.add(text);
-        ArrayList<PendingIntent> sentIntents = new ArrayList<PendingIntent>();
-        sentIntents.add(sentIntent);
-        ArrayList<PendingIntent> deliveryIntents = new ArrayList<PendingIntent>();
-        deliveryIntents.add(deliveryIntent);
-        broadcastOutgoingSms(callingPackage, destAddr, scAddr, false, parts, sentIntents, deliveryIntents);
+        for (ISmsMiddleware middleware: mMiddleware.values()) {
+            try {
+                if (middleware.onSendText(destAddr, scAddr, text, sentIntent, deliveryIntent))
+                    return;
+            }
+            catch (Exception e) {
+                // TOOD: remove the busted middleware?
+            }
+        }
+        mIccSmsInterfaceManager.sendText(destAddr, scAddr, text, sentIntent, deliveryIntent);
     }
 
     @Override
     public void sendMultipartText(String callingPackage, String destAddr, String scAddr,
             List<String> parts, List<PendingIntent> sentIntents,
-            List<PendingIntent> deliveryIntents) {
-        mContext.enforceCallingPermission(
-                android.Manifest.permission.SEND_SMS,
-                "Sending SMS message");
-        broadcastOutgoingSms(callingPackage, destAddr, scAddr, true,
-                parts != null ? new ArrayList<String>(parts) : null,
-                sentIntents != null ? new ArrayList<PendingIntent>(sentIntents) : null,
-                deliveryIntents != null ?  new ArrayList<PendingIntent>(deliveryIntents) : null);
+            List<PendingIntent> deliveryIntents) throws android.os.RemoteException {
+        for (ISmsMiddleware middleware: mMiddleware.values()) {
+            try {
+                if (middleware.onSendMultipartText(destAddr, scAddr, parts, sentIntents, deliveryIntents))
+                    return;
+            }
+            catch (Exception e) {
+                // TOOD: remove the busted middleware?
+            }
+        }
+        mIccSmsInterfaceManager.sendMultipartText(destAddr, scAddr,
+                parts, sentIntents, deliveryIntents);
     }
 
     @Override
